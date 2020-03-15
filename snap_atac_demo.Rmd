@@ -143,13 +143,6 @@ snaptools snap-add-pmat \
 In this step, we will load a previously processed snap file into R. This file contains the example data from 10X genomics consisting of 5,000 adult mouse brain cells. Unfortunately, you will not be able to use RStudio for this lab because it is not included in our Singularity container. Instead, open the terminal and use R with the command line. You can paste data in the your terminal using CTRL+shift+V.
 
 ```{shell, eval=FALSE}
-# Copy the snap file into your working directory
-cp /home/albanus/classes/bioinf545_w20/data/atac_v1_adult_brain_fresh_5k.snap .
-
-# # Or download it directly
-# wget http://renlab.sdsc.edu/r3fang/share/github/Mouse_Brain_10X/atac_v1_adult_brain_fresh_5k.snap
-
-# Start R
 R -q
 ```
 
@@ -171,7 +164,7 @@ Next, we will calculate the promoter ratio for each barcode, which is defined as
 
 ```{r}
 data_dir <- "/home/albanus/classes/bioinf545_w20/data"
-file.snap <- "atac_v1_adult_brain_fresh_5k.snap"
+file.snap <- file.path(data_dir, "atac_v1_adult_brain_fresh_5k.snap")
 file.barcodes <- file.path(data_dir, "atac_v1_adult_brain_fresh_5k_singlecell.csv")
 
 snap_obj <- createSnap(file = file.snap, sample = "atac_v1_adult_brain_fresh_5k")
