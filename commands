@@ -1,0 +1,11 @@
+#!/bin/bash
+
+# Build singularity container
+sudo singularity build singularity/snATAC_sin2.5.2.sif Singularity
+# scp albanus@classroom.dcmb.med.umich.edu:/home/albanus/classes/\
+# bioinf545_w20/singularity/snATAC_sin2.5.2.sif singularity/
+
+# Move html to virtual server
+scp snap_atac_demo.html vs:/home/albanus/web/classes/bioinf545_w20/
+ssh vs chmod 755 /home/albanus/web/classes/bioinf545_w20/snap_atac_demo.html
+

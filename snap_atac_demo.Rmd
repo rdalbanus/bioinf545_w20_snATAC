@@ -1,0 +1,603 @@
+---
+title: "BIOINF 545 snATAC lab"
+output:
+  html_document:
+    theme: readable
+    df_print: paged
+    code_folding: show
+    toc: true
+editor_options: 
+  chunk_output_type: inline
+---
+
+```{r setup, include=FALSE}
+options(stringsAsFactors = F)
+# setwd("/lab/work/albanus/class/bioinf545_2020W/snATAC")
+
+library(dplyr)
+library(tidyr)
+
+library(SnapATAC)
+library(GenomicRanges)
+library(viridisLite)
+library(ggplot2)
+# library(ggpointdensity)
+library(scales)
+
+knitr::opts_knit$set(root.dir = "/lab/work/albanus/class/bioinf545_2020W/snATAC")
+knitr::opts_chunk$set(fig.width = 4, fig.height = 4, fig.show = "hold")
+
+theme_set(theme_bw(base_size = 12))
+```
+
+# Activate the Singularity environment
+Before we do anything, we need to be able to use `snaptools` and `SnapATAC` in our machines. Instead of installing them from scratch, we will use a previously compiled [Singularity](https://www.sylabs.io/docs/) container. Singularity containers allow for seamless transfer of dependencies between different machines - it's a great tool for reproducibible research. Instructions on how this container was generated are available at the [Github repository](TODO) for this lab.
+
+First, let's try using snaptools and SnapATAC without loading the container. There might even be a version of these tools in the classroom, but there is no way to guarantee we will get the same results for this lab.
+
+```{shell, eval = FALSE}
+which snaptools
+which R
+R -q
+> library(SnapTools)
+quit(save = "no")
+```
+
+We can activate the Singularity container using `singularity shell`. Note that `snaptools` is now included in our $PATH and we are using a different R installation that already has `SnapATAC` installed. The biggest advantage of the container approach is that you can just make a copy of this container and, as long as the host machine has Singularity installed, you can easily port your entire pipeline. Note that the Singularity approach is different from conda environments, where you can only share a configuration file and each machine has to make the environment from scratch. Singularity is great for developing pipelines in your lab's server and/or personal machine and then scaling it to a big cluster like Great Lakes without ever having to worry about dealing with setting up software, talking to sysadmins, etc. In terms of reproducible research, this approach allows you to share a container to reproduce the analyses from your papers or to share pipelines with collaborators.
+
+```{shell, eval = FALSE}
+container="/home/albanus/classes/bioinf545_w20/singularity/snATAC_sin2.5.2.sif"
+singularity shell ${container}
+
+which snaptools
+which R
+R -q
+> library(SnapTools)
+quit(save = "no")
+```
+
+You can exit the container at any time using `exit` or CTRL+D.
+
+# Generating a snap file from demultiplexed fastq files using snaptools
+## Align reads to the reference genome
+Now that we have snaptools and SnapATAC set up. We will start this lab using snaptools to to align the reads in the example demultiplexed paired-end fastq files to the mm10 (mouse) genome. Demultiplexed fastq files result from previous processing (normally performed by the sequencing core) to separate the barcode sequences from the genomic sequences. For more information about demultiplexing reads, refer to the [10X Cell Ranger documentation](https://support.10xgenomics.com/single-cell-atac/software/pipelines/latest/using/mkfastq) and the [snaptools FAQ](https://github.com/r3fang/SnapATAC/wiki/FAQ). A demultiplexed fastq file will have the barcode as part of the read name.
+
+The command `snaptools align-paired-end` is a `bwa` wrapper with some additional filtering parameters (e.g. minimum number of reads per barcode). This will take a few minutes.
+
+```{shell, eval = FALSE}
+data_dir="/home/albanus/classes/bioinf545_w20/data/"
+fastq_r1="${data_dir}/demo.R1.fastq.gz"
+fastq_r2="${data_dir}/demo.R2.fastq.gz"
+bwa_bin="/home/albanus/classes/bioinf545_w20/sw/bwa/"
+ref_file="/home/albanus/classes/bioinf545_w20/sw/bwa/mm10.fa"
+
+snaptools align-paired-end  \
+    --input-reference=${ref_file} \
+    --input-fastq1=${fastq_r1} \
+    --input-fastq2=${fastq_r2} \
+    --output-bam=demo.bam   \
+    --aligner=bwa   \
+    --path-to-aligner=${bwa_bin} \
+    --read-fastq-command=zcat   \
+    --min-cov=0 \
+    --num-threads=5 \
+    --if-sort=True  \
+    --tmp-folder=./ \
+    --overwrite=TRUE
+```
+
+## Create and pre-process the snap file
+After alignment, we well create a snap file. We will filter fragments based on parameters such as mapping quality score (MAPQ), properly paired reads, and fragment length.
+
+```{shell, eval = FALSE}
+chrom_size="/home/albanus/classes/bioinf545_w20/sw/bwa/mm10.chrom.size"
+
+snaptools snap-pre  \
+    --input-file=demo.bam  \
+    --output-snap=demo.snap  \
+    --genome-name=mm10  \
+    --genome-size=${chrom_size}  \
+    --min-mapq=30  \
+    --min-flen=0  \
+    --max-flen=1000  \
+    --keep-chrm=TRUE  \
+    --keep-single=TRUE  \
+    --keep-secondary=False  \
+    --overwrite=True  \
+    --max-num=1000000  \
+    --min-cov=100  \
+    --verbose=True
+```
+
+## Calculate ATAC-seq signal across genomic bins
+We will now calculate cell-by-bin matrices for snaptools using 5 Kb genomic bins covering the whole genome. The signal in these genomic bins will be used later by SnapATAC to cluster barcodes. The advantage of this approach is that no previous processing is necessary for obtaining clusters. Other methods might require you to call peaks on the aggregate BAM file and used the signal on peaks as the input for clustering. However, this aggregate peak calling strategy is going to be highly biased towards the overrepresented cell types in your dataset and might completely miss important genomic regions that are specific to rare cell populations.
+
+```{shell, eval = FALSE}
+snaptools snap-add-bmat \
+    --snap-file=demo.snap \
+    --bin-size-list 5000 \  # you can input multiple values (e.g. 5000 10000)
+    --verbose=True
+```
+
+## Calculate ATAC-seq signal across regions of interest
+However, if for any reason you already have a set of regions that you want to use to cluster your nuclei, you can calculate ATAC-seq signal on these regions by inputting them directly to snaptools using a BED file.
+
+
+```{shell, eval = FALSE}
+peak_file="/home/albanus/classes/bioinf545_w20/data/peaks.bed"
+
+snaptools snap-add-pmat \
+    --snap-file=demo.snap \
+    --peak-file ${peak_file} \
+    --verbose=True  
+```
+
+
+# Using SnapATAC for clustering
+## Initial QC
+In this step, we will load a previously processed snap file into R. This file contains the example data from 10X genomics consisting of 5,000 adult mouse brain cells. Unfortunately, you will not be able to use RStudio for this lab because it is not included in our Singularity container. Instead, open the terminal and use R with the command line:
+
+```{shell, eval = FALSE}
+R -q
+```
+
+First, we will load the snap file and the barcodes metadata. The metadata file contains information about each barcode, such as the number of reads, etc. Beacuse of time constraints, we will not be able generate the metadata in this lab. There are instructions on how to generate it in the [Cell Ranger ATAC documentation](https://support.10xgenomics.com/single-cell-atac/software/pipelines/latest/using/count).
+
+Next, we will calculate the promoter ratio for each barcode, which is defined as the fraction of ATAC-seq fragments in regions annotated as promoters versus all fragments that passed QC for that barcode. This gives us an estimate of the signal-to-noise ratio for each barcode. We expect that higher promoter ratios correspond to good nuclei. However, we will quickly see that barcodes with low coverage can have abnormally high promoter ratios.
+
+```{r}
+data_dir <- "/home/albanus/classes/bioinf545_w20/data"
+file.snap <- file.path(data_dir, "atac_v1_adult_brain_fresh_5k.snap")
+file.barcodes <- file.path(data_dir, "atac_v1_adult_brain_fresh_5k_singlecell.csv")
+
+snap_obj <- createSnap(file = file.snap, sample = "atac_v1_adult_brain_fresh_5k")
+
+# Read barcodes and remove first line
+barcodes <- read.csv(file.barcodes,head = TRUE)
+barcodes <- barcodes[2:nrow(barcodes),]  
+
+promoter_ratio <- (barcodes$promoter_region_fragments + 1) / 
+                  (barcodes$passed_filters + 1)
+
+data <- data.frame(nreads = barcodes$passed_filters, 
+                   promoter_ratio = promoter_ratio)
+barcodes$promoter_ratio <- promoter_ratio
+
+snap_obj
+```
+
+This snap file is starting with 20,000 barcodes. This dataset was generated from 5K cells, so most of the barcodes correspond to empty gems that we will have to filter out. First, we will plot all the data to see how they behave in respect to coverage and promoter ratio. As expected, we see the highest promoter ratios to the left of the plot, where the barcodes with very low coverage are located. To the right, we see a higher density of points (barcodes) with high coverage and promoter ratios that are not as high.
+
+```{r}
+# Data overview
+p1 <- ggplot(data, aes(x = nreads + 1, y = promoter_ratio)) + 
+  geom_point(size = 0.1, alpha = .1) +
+  labs(x = "Number of reads per barcode", y = "Barcode promoter ratio",
+       title = "10X Fresh Adult Brain") +
+  scale_color_viridis_c(trans = "log10") +
+  scale_x_continuous(trans = "log10", labels = comma)
+plot(p1)
+```
+
+We only want to look at barcodes that represent real nuclei. Low coverage barcodes are probably coming from empty droplets (with background DNA) and/or degraded nuclei.
+
+Based on the data, a cutoff threshold of reads between 1,000 and 100,000 and a promoter ratio betwen 0.15 and 0.6 could be reasonable starting point to start calling clusters:
+
+```{r}
+cutoffs <- list(nreads = list(min = 10^3, max = 10^5),
+                pr = list(min = 0.15, max = 0.6))
+
+p1 +
+  geom_hline(yintercept = unlist(cutoffs$pr), color = "red", lty = "dashed") +
+  geom_vline(xintercept = unlist(cutoffs$nreads), color = "red", lty = "dashed")
+```
+
+Let's zoom in a bit. You can try experimenting with the cutoff thresholds and see how they affect the downstream clustering results. In a real analysis, you will spend a considerable number of hours going back and forth between QC and clustering parameters to optimize your clustering results.
+
+```{r, fig.width=5}
+p2 <- data %>% 
+  filter(nreads >= 500) %>% 
+  ggplot(aes(x = nreads + 1, y = promoter_ratio)) + 
+  # geom_pointdensity(size = 0.8) +
+  geom_point(alpha = 0.3, size = 1) +
+  geom_hline(yintercept = unlist(cutoffs$pr), color = "red", lty = "dashed") +
+  geom_vline(xintercept = unlist(cutoffs$nreads), color = "red", lty = "dashed") +
+  labs(x = "Number of reads per barcode", y = "Barcode promoter ratio",
+       color = "Point density", title = "10X Fresh Adult Brain") +
+  scale_color_viridis_c(trans = "log10") +
+  scale_x_continuous(trans = "log10", labels = comma)
+plot(p2)
+```
+
+## Barcode filtering based on ATAC-seq signal
+We will subset the data to only look at barcodes that pass our coverage and promoter ratio thresholds. We get ~4K cells after subsetting.
+
+```{r}
+# Filter data
+barcodes.sel <- barcodes %>% 
+  filter(passed_filters >= cutoffs$nreads$min,
+         passed_filters <= cutoffs$nreads$max,
+         promoter_ratio >= cutoffs$pr$min,
+         promoter_ratio <= cutoffs$pr$max)
+
+rownames(barcodes.sel) <- barcodes.sel$barcode
+snap_obj <- snap_obj[which(snap_obj@barcode %in% barcodes.sel$barcode),]
+snap_obj@metaData <- barcodes.sel[snap_obj@barcode,]
+snap_obj
+```
+
+This snap file has already been binarized. The following commands will show the available bin sizes, add the cell-by-bin count matrix with 5,000 bp resolution into our snap object, and convert the results into a binary matrix (i.e. 0/1 representing bin is accessible no/yes).
+
+```{r}
+# show what bin sizes exist in atac_v1_adult_brain_fresh_5k.snap file
+showBinSizes(file.snap)
+snap_obj <- addBmatToSnap(snap_obj, bin.size = 5000, num.cores = 4)
+snap_obj <- makeBinary(snap_obj, mat = "bmat")
+
+snap_obj
+```
+
+Our snap object has ~500K bins, but we need to do some filtering before clustering. First we will remove ENCODE blacklisted regions, which are segments of the genome that have known mappability issues. There are blacklisted regions for common genome assemblies, including human. Always remove those no matter what type of analyses you are doing.
+
+```{r}
+# Read the ENCODE blacklist mm10 file and filter out problematic regions
+file.bl <- file.path(data_dir, "mm10.blacklist.bed.gz")
+bl <- read.table(file.bl, col.names = c("chrom", "start", "end"))
+bl.gr <- GRanges(bl$chrom, IRanges(bl$start, bl$end))
+idy <- queryHits(findOverlaps(snap_obj@feature, bl.gr))  # similar to bedtools 
+                                                         # intersect, but using 
+                                                         # GRanges
+
+if (length(idy) > 0){
+  snap_obj <- snap_obj[,-idy, mat="bmat"]
+}
+snap_obj
+```
+
+We got rid of 103 bins overlapping regions that could affect the analyses. Now we will remove bins overlapping mitochondrial regions (`chrM`) or segments of the genome that are still not very well resolved (`chrUn` and `chr.*_random`). 
+
+```{r}
+chr.all <- unique(seqlevels(snap_obj@feature))
+chr.exclude <- chr.all[grepl("random|chrM|chrUn", chr.all)]
+chr.exclude
+
+idy <- grep(paste(chr.exclude, collapse="|"), snap_obj@feature)
+if(length(idy) > 0){
+  snap_obj <- snap_obj[,-idy, mat="bmat"]
+}
+snap_obj
+```
+
+We removed over 1,000 bins. Let's look at the histogram of number of reads per bin. The dashed vertical line corresponds to the 95% quantile of coverage for non-empty bins. These high-coverage bins overlap constitutive features, such as housekeeping genes and promoters, so it's potentially useful to remove them before clustering. 
+
+```{r}
+bin_cov <- data.frame(nreads = Matrix::colSums(snap_obj@bmat)) %>% 
+  filter(nreads > 1)
+  
+bin_cov %>% 
+  ggplot(aes(nreads + 1)) +
+  geom_histogram(bins = 15, color = "black", fill = "lightblue") +
+  geom_vline(aes(xintercept = quantile(bin_cov$nreads , 0.95)), 
+             color = "red", lty = "dashed") +
+  scale_x_continuous(trans = "log10", labels = comma) +
+  labs(x = "Number of reads per bin")
+```
+
+The final number of bins for clustering is ~470K.
+
+```{r}
+bin.cutoff <- quantile(bin_cov$nreads, 0.95)
+idy <- which(bin_cov <= bin.cutoff & bin_cov > 0)
+snap_obj <- snap_obj[, idy, mat="bmat"]
+snap_obj
+```
+
+## Clustering high-quality nuclei
+Prior to clustering we will perform dimentionality reduction using the `runDiffusionMaps` function. We will compute 50 eigenvectors. This process will help inform us how many eigenvectors we will use for clustering in the next step.
+
+This will take a couple of minutes.
+
+```{r, fig.width=7, fig.height=7}
+snap_obj <- runDiffusionMaps(obj = snap_obj, input.mat = "bmat", num.eigs = 50)
+
+plotDimReductPW(obj = snap_obj, eigs.dims = 1:50,
+                point.size = 0.3, point.color = "grey", 
+                point.shape = 19, point.alpha = 0.6, 
+                down.sample = 5000)
+```
+
+As you can see from the plots, the data has various "interesting" shapes up until around eigenvector 20. After that, everything looks like a uniform blob. This means that the larger eigenvectors are unable to capture meaningful differences between the nuclei. Note that different datasets will have different properties. Since this is a brain sample, we expect high diversity of cell types and the number of usable eigenvectors should be higher. However, other less heterogeneous tissues might need less eigenvalues.
+
+Based on the plots above, we will use eigenvectors 1 through 20 to run clustering. SnapATAC first builds a *K nearest neighbor (KNN) graph* between barcodes and then use the *tSNE embeddings* for clustering using the *Louvain algorithm*. We will start with `k=15` for this data.
+
+```{r}
+max_eigen <- 20
+k_to_use <- 15
+
+snap_obj <- runKNN(obj = snap_obj, eigs.dims = 1:max_eigen, k = k_to_use)
+
+snap_obj <- runCluster(obj = snap_obj,
+                   tmp.folder = tempdir(),
+                   louvain.lib = "R-igraph",
+                   seed.use = 10)
+
+snap_obj@metaData$cluster <- snap_obj@cluster
+
+snap_obj  <-  runViz(obj = snap_obj, 
+                 tmp.folder = tempdir(),
+                 dims = 2,
+                 eigs.dims = 1:max_eigen, 
+                 method = "Rtsne",
+                 seed.use = 10)
+```
+
+Now let's look at the clustering results. Try re-running the code above to experiment different values for k and number of eigenvectors. What happens if you increase k or use less eigenvectors? Try using only the first 5 eigenvectors and k=100. You should carefully explore the choice of parameters; this is all part of the exploratory analyses to obtain good clustering.
+
+```{r, fig.width=5, fig.height=5}
+plotViz(obj = snap_obj, method = "tsne", 
+        main = "10X Brain Cluster", point.color = snap_obj@cluster, 
+        point.size = 1, point.shape = 19, point.alpha = 0.8, 
+        text.add = TRUE, text.size = 1.5, text.color = "black",
+        text.halo.add = TRUE, text.halo.color = "white", text.halo.width = 0.2,
+        down.sample = 10000, legend.add = FALSE)
+```
+
+## Clustering QC with technical aspects
+Now we should QC the clustering results. Let's overlay some technical properties on the UMAP. We will look at the number of fragments per barcode, the fraction of reads in peaks (FRiP), and reads marked as duplicate. Is there any pattern that stands out? Maybe a cluster that seems to be high or low in a technical factor. This information is useful to inform the choice of QC thresholds above as well as identify potential technical factors that can be mitigated. At the very least, you will be able to determine if some clusters seem to be driven by technical artifacts and potentially discard them from downstream analyses.
+
+```{r, fig.width=5, fig.height=5}
+plotFeatureSingle(obj = snap_obj, 
+                  feature.value = log10(snap_obj@metaData[,"passed_filters"] + 1),
+                  method = "tsne", main = "10X Brain Read Depth", 
+                  point.size = 0.2, point.shape = 19, down.sample = 10000, 
+                  quantiles = c(0.01, 0.99)) 
+
+plotFeatureSingle(obj = snap_obj,
+                  feature.value = snap_obj@metaData$peak_region_fragments / snap_obj@metaData$passed_filters,
+                  method = "tsne", main = "10X Brain FRiP",
+                  point.size = 0.2, point.shape = 19, down.sample = 10000,
+                  quantiles = c(0.01, 0.99)) # remove outliers
+                  
+plotFeatureSingle(obj = snap_obj,
+                  feature.value = snap_obj@metaData$duplicate / snap_obj@metaData$total,
+                  method = "tsne", main = "10X Brain Duplicate",
+                  point.size = 0.2, point.shape = 19, down.sample = 10000,
+                  quantiles = c(0.01, 0.99)) # remove outliers
+```
+
+## Plotting marker genes
+Determining which genes are accessible in each cluster is very important both for QC and for biological analyses. From the QC point of view, marker genes will help you identify optimal clustering parameters. From the biological point of view, these markers will serve to label the clusters and identify which cell types they represent.
+
+```{r, fig.width=10, fig.height=10}
+file.genes <- file.path(data_dir, "gencode.vM16.gene.bed")
+genes = read.table(file.genes)
+
+# Convert bed file to GRanges format
+genes.gr = GRanges(genes[,1], 
+    IRanges(genes[,2], genes[,3]), name = genes[,4]
+  )
+marker.genes = c(
+    "Snap25", "Gad2", "Apoe",
+    "C1qb", "Pvalb", "Vip", 
+    "Sst", "Lamp5", "Slc17a7"
+  )
+genes.sel.gr <- genes.gr[which(genes.gr$name %in% marker.genes)]
+
+# re-add the cell-by-bin matrix to the snap object
+snap_obj = addBmatToSnap(snap_obj)
+snap_obj = createGmatFromMat(
+    obj = snap_obj, 
+    input.mat = "bmat",
+    genes = genes.sel.gr,
+    do.par = TRUE,
+    num.cores = 10
+  )
+# normalize the cell-by-gene matrix
+snap_obj = scaleCountMatrix(
+    obj = snap_obj, 
+    cov = snap_obj@metaData$passed_filters + 1,
+    mat = "gmat",
+    method = "RPM"
+  )
+# smooth the cell-by-gene matrix
+snap_obj = runMagic(
+    obj = snap_obj,
+    input.mat = "gmat",
+    step.size = 3
+  )
+
+par(mfrow = c(3,3))
+for(i in 1:9){
+    plotFeatureSingle(
+        obj = snap_obj,
+        feature.value = snap_obj@gmat[, marker.genes[i]],
+        method = "tsne", 
+        main = marker.genes[i],
+        point.size = 0.1, 
+        point.shape = 19, 
+        down.sample = 10000,
+        quantiles = c(0, 1)
+  )}
+```
+
+There are very clear differences in marker gene body accessibility across clusters, which are likely correlated with gene expression levels. Notice that some genes are more cluster-specific than others. A potentially helpful analysis is to perform hierarchical clustering at the cluster-level gene body accessibility. We can very clearly find two major cell type groups - in this dataset, they should correspond to the excitatory (**Slc17a7**) and inhibitory (**Gad2**) neuronal populations.
+
+```{r, fig.width=6, fig.height=5}
+# calculate the ensemble signals for each cluster
+ensemble.ls = lapply(split(seq(length(snap_obj@cluster)), snap_obj@cluster), function(x){
+	SnapATAC::colMeans(snap_obj[x,], mat = "bmat")
+	})
+# cluster using 1-cor as distance  
+hc = hclust(as.dist(1 - cor(t(do.call(rbind, ensemble.ls)))), method = "ward.D2")
+plotViz(
+    obj = snap_obj,
+    method = "tsne", 
+    main = "10X Brain Cluster",
+    point.color = snap_obj@cluster, 
+    point.size = 1, 
+    point.shape = 19, 
+    point.alpha = 0.8, 
+    text.add = TRUE,
+    text.size = 1.5,
+    text.color = "black",
+    text.halo.add = TRUE,
+    text.halo.color = "white",
+    text.halo.width = 0.2,
+    down.sample = 10000,
+    legend.add = FALSE
+    )
+plot(hc, hang = -1, xlab = "Cluster", sub = "")
+```
+
+# Cluster-level analyses 
+## Calling peaks on clusters
+Once you are satisfied with your clustering results, you can start analyzing each cluster as a single entitity by aggregating the data from all the barcodes. From then on, you are essentially treating each cluster as a bulk ATAC-seq experiment. In the next steps we will look at peak calls from the clusters. For the interest of time, we will skip doing this ourselves and instead look at peak calls that were generated for this lab. In summary, the commented lines below will use a MACS2 wrapper to call narrow peaks on each cluster and then generate a binarized cell-by-peak matrix (similar to what we did earlier for the genomic bins). If you run the commented code, the output files from MACS2 will be generated in your working directory. You can run `bedGraphToBigWig` on the outputted bedgraph files to generate signal tracks for visualization in a genome browser.
+
+Note that even though we used the same seeds for the analyses, the clustering results may be slightly different from what you previously generated.
+
+```{r}
+# # Get the paths for snaptools and MACS2
+# path_snaptools <- system("which snaptools")
+# path_macs2 <- system("which macs2")
+# 
+# # Call peaks for all cluster with more than 100 cells
+# clusters.sel <- names(table(snap_obj@cluster))[which(table(snap_obj@cluster) > 100)]
+# peaks.ls <- mclapply(seq(clusters.sel), function(i){
+#     print(clusters.sel[i])
+#     runMACS(
+#         obj = snap_obj[which(snap_obj@cluster == clusters.sel[i]),],
+#         output.prefix = paste0("atac_v1_adult_brain_fresh_5k.", gsub(" ", "_", clusters.sel)[i]),
+#         path.to.snaptools = path_snaptools,
+#         path.to.macs = path_macs2,
+#         gsize = "hs", # mm, hs, etc
+#         buffer.size = 500,
+#         num.cores = 1,
+#         macs.options = "--nomodel --shift 100 --ext 200 --qval 5e-2 -B --SPMR",
+#         tmp.folder = tempdir()
+#    )
+#  }, mc.cores = 8)  # parallelization
+# 
+# # assuming all .narrowPeak files in the current folder are generated from the clusters
+# peaks.names <- system("ls | grep narrowPeak", intern = TRUE)
+# peak.gr.ls = lapply(peaks.names, function(x){
+#     peak.df = read.table(x)
+#     GRanges(peak.df[,1], IRanges(peak.df[,2], peak.df[,3]))
+#   })
+# peak.gr <- GenomicRanges::reduce(Reduce(c, peak.gr.ls))
+# peak.gr
+# 
+# peaks.df <- as.data.frame(peak.gr)[,1:3]
+# write.table(peaks.df,file = "peaks.combined.bed", append = FALSE,
+# 		quote = FALSE,sep = "\t", eol = "\n", na = "NA", dec = ".",
+# 		row.names = FALSE, col.names = FALSE, qmethod = c("escape", "double"),
+# 		fileEncoding = "")
+# saveRDS(snap_obj, file = file.path(data_dir, "macs2_clusters/atac_v1_adult_brain_fresh_5k.snap.rds"))
+
+snap_obj <- readRDS(file.path(data_dir, "macs2_clusters/atac_v1_adult_brain_fresh_5k.snap.rds"))
+snap_obj <- addPmatToSnap(snap_obj)
+snap_obj <- makeBinary(snap_obj, mat = "pmat")
+snap_obj
+```
+
+## Differential accessibility analyses
+SnapATAC provides a statistical framework to identify differentially accessible regions between clusters. This is implemented in the `findDAR` function. One can use a Fisher exact test, a likelihood-ratio test, or quasi-likelihood F-test. We will use the Fisher exact test.
+
+First let's look at cluster 21. By default, SnapATAC will automatically select group of background cells to compare against, but you can manually select another cluster to compare clusters against each other. The resulting object called `DARs` is a data.frame with the differential accessibility analysis results for each peak in `snap_obj@peak`, a GRanges object containing the coordinates for each peak.
+
+```{r, fig.height=5, fig.width=5}
+DARs <- findDAR(
+    obj = snap_obj,
+    input.mat = "pmat",
+    cluster.pos = 21,
+    cluster.neg.method = "knn",
+    test.method = "exactTest",
+    bcv = 0.1, # 0.4 for human, 0.1 for mouse
+    seed.use = 10
+  )
+DARs$FDR <- p.adjust(DARs$PValue, method = "BH")  # Calculate FDR
+idy = which(DARs$FDR < 5e-2 & DARs$logFC > 0)  # DARs with increased accesibility
+plot(DARs$logCPM, DARs$logFC, 
+    pch = 19, cex = 0.1, col = "grey", 
+    ylab = "logFC", xlab = "logCPM",
+    main = "Cluster 21"
+  )
+points(DARs$logCPM[idy], 
+    DARs$logFC[idy], 
+    pch = 19, 
+    cex = 0.5, 
+    col = "red"
+  )
+abline(h = 0, lwd = 1, lty = 2)
+
+# Manually calculate fold change Z-scores
+covs = Matrix::rowSums(snap_obj@pmat)
+vals = Matrix::rowSums(snap_obj@pmat[,idy]) / covs
+vals.zscore = (vals - mean(vals)) / sd(vals)
+
+# Plot Z-scores on the UMAP
+plotFeatureSingle(
+    obj = snap_obj,
+    feature.value = vals.zscore,
+    method = "tsne", 
+    main = "Cluster 21",
+    point.size = 0.1, 
+    point.shape = 19, 
+    down.sample = 5000,
+    quantiles = c(0.01, 0.99)
+  )
+```
+
+We will look for differentially accessible regions in all the clusters. The resulting `accessible_peaks` object is a list of numeric values with the indices of the instances of `snap_obj@peak` that are significantly accessible for each cluster.
+
+```{r, fig.height=7, fig.width=7}
+# Same as previous chunk, but for all clusters
+accessible_peaks <- lapply(levels(snap_obj@cluster), function(cluster_i){
+  DARs <- findDAR(
+		obj = snap_obj,
+		input.mat = "pmat",
+		cluster.pos = cluster_i,
+		cluster.neg = NULL,
+		cluster.neg.method = "knn",
+		bcv = 0.1,
+		test.method = "exactTest",
+		seed.use = 10
+		)
+	DARs$FDR <- p.adjust(DARs$PValue, method = "BH")  # Calculate FDR
+	idy = which(DARs$FDR < 5e-2 & DARs$logFC > 0)
+	if((x = length(idy)) < 2000L){
+			PValues = DARs$PValue
+			PValues[DARs$logFC < 0] = 1
+			idy = order(PValues, decreasing = FALSE)[1:2000]
+			rm(PValues); # free memory
+	}
+	idy
+  })
+names(accessible_peaks) = levels(snap_obj@cluster)
+
+par(mfrow = c(2, 2))
+for(cluster_i in levels(snap_obj@cluster)){
+	# print(cluster_i)
+	idy = accessible_peaks[[cluster_i]]
+	vals = Matrix::rowSums(snap_obj@pmat[,idy]) / covs
+	vals.zscore = (vals - mean(vals)) / sd(vals)
+	plotFeatureSingle(
+		obj = snap_obj,
+		feature.value = vals.zscore,
+		method = "tsne", 
+		main = cluster_i,
+		point.size = 0.1, 
+		point.shape = 19, 
+		down.sample = 5000,
+		quantiles = c(0.01, 0.99)
+		)
+}
+```
+
+In the last step in this lab, we will make and save a bed file with the differentially accessible peaks in cluster 8.
+
+```{r, eval=FALSE}
+bed_output <- as.data.frame(snap_obj@peak[accessible_peaks[["8"]]])
+write.table(bed_output, file = "accessible_peaks__cluster8.bed", 
+            col.names = F, row.names = F, sep = "\t", quote = F)
+```
+
