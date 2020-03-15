@@ -566,7 +566,7 @@ plotFeatureSingle(
 
 We will look for differentially accessible regions in all the clusters. The resulting `accessible_peaks` object is a list of numeric values with the indices of the instances of `snap_obj@peak` that are significantly accessible for each cluster.
 
-```{r, fig.height=7, fig.width=7}
+```{r, fig.height=3.5, fig.width=7}
 # Same as previous chunk, but for all clusters
 accessible_peaks <- lapply(levels(snap_obj@cluster), function(cluster_i){
   DARs <- findDAR(
