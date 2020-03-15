@@ -24,3 +24,4 @@ IncludeCmd: yes
 	conda install -c conda-forge -c bioconda -c defaults java-jdk snaptools r-devtools r-optparse r-tidyverse r-irlba r-dosnow r-plot3d r-doparallel
 	Rscript -e "install.packages('Matrix', repos = 'http://cloud.r-project.org')"
 	Rscript -e "library(devtools); install_github('r3fang/SnapATAC')"
+	conda install -c bioconda bioconductor-rhdf5lib=1.6.0 bioconductor-rhdf5=2.28.0
