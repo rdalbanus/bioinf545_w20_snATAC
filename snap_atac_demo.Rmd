@@ -35,24 +35,28 @@ Before we do anything, we need to be able to use `snaptools` and `SnapATAC` in o
 
 First, let's try using snaptools and SnapATAC without loading the container. There might even be a version of these tools in the classroom, but there is no way to guarantee we will get the same results for this lab.
 
-```{shell, eval = FALSE}
+```{shell, eval=FALSE}
 which snaptools
 which R
+
+# Start R and check if SnapATAC is available
 R -q
-> library(SnapTools)
+> library(SnapATAC)
 quit(save = "no")
 ```
 
 We can activate the Singularity container using `singularity shell`. Note that `snaptools` is now included in our $PATH and we are using a different R installation that already has `SnapATAC` installed. The biggest advantage of the container approach is that you can just make a copy of this container and, as long as the host machine has Singularity installed, you can easily port your entire pipeline. Note that the Singularity approach is different from conda environments, where you can only share a configuration file and each machine has to make the environment from scratch. Singularity is great for developing pipelines in your lab's server and/or personal machine and then scaling it to a big cluster like Great Lakes without ever having to worry about dealing with setting up software, talking to sysadmins, etc. In terms of reproducible research, this approach allows you to share a container to reproduce the analyses from your papers or to share pipelines with collaborators.
 
-```{shell, eval = FALSE}
+```{shell, eval=FALSE}
 container="/home/albanus/classes/bioinf545_w20/singularity/snATAC_sin2.5.2.sif"
 singularity shell ${container}
 
 which snaptools
 which R
+
+# Start R and check if SnapATAC is available
 R -q
-> library(SnapTools)
+> library(SnapATAC)
 quit(save = "no")
 ```
 
@@ -64,7 +68,7 @@ Now that we have snaptools and SnapATAC set up. We will start this lab using sna
 
 The command `snaptools align-paired-end` is a `bwa` wrapper with some additional filtering parameters (e.g. minimum number of reads per barcode). This will take a few minutes.
 
-```{shell, eval = FALSE}
+```{shell, eval=FALSE}
 data_dir="/home/albanus/classes/bioinf545_w20/data/"
 fastq_r1="${data_dir}/demo.R1.fastq.gz"
 fastq_r2="${data_dir}/demo.R2.fastq.gz"
@@ -89,7 +93,7 @@ snaptools align-paired-end  \
 ## Create and pre-process the snap file
 After alignment, we well create a snap file. We will filter fragments based on parameters such as mapping quality score (MAPQ), properly paired reads, and fragment length.
 
-```{shell, eval = FALSE}
+```{shell, eval=FALSE}
 chrom_size="/home/albanus/classes/bioinf545_w20/sw/bwa/mm10.chrom.size"
 
 snaptools snap-pre  \
@@ -112,10 +116,11 @@ snaptools snap-pre  \
 ## Calculate ATAC-seq signal across genomic bins
 We will now calculate cell-by-bin matrices for snaptools using 5 Kb genomic bins covering the whole genome. The signal in these genomic bins will be used later by SnapATAC to cluster barcodes. The advantage of this approach is that no previous processing is necessary for obtaining clusters. Other methods might require you to call peaks on the aggregate BAM file and used the signal on peaks as the input for clustering. However, this aggregate peak calling strategy is going to be highly biased towards the overrepresented cell types in your dataset and might completely miss important genomic regions that are specific to rare cell populations.
 
-```{shell, eval = FALSE}
+```{shell, eval=FALSE}
+# you can input multiple space-separated values for bin-size-list (e.g. 5000 10000)
 snaptools snap-add-bmat \
     --snap-file=demo.snap \
-    --bin-size-list 5000 \  # you can input multiple values (e.g. 5000 10000)
+    --bin-size-list 5000 \
     --verbose=True
 ```
 
@@ -123,7 +128,7 @@ snaptools snap-add-bmat \
 However, if for any reason you already have a set of regions that you want to use to cluster your nuclei, you can calculate ATAC-seq signal on these regions by inputting them directly to snaptools using a BED file.
 
 
-```{shell, eval = FALSE}
+```{shell, eval=FALSE}
 peak_file="/home/albanus/classes/bioinf545_w20/data/peaks.bed"
 
 snaptools snap-add-pmat \
@@ -135,11 +140,30 @@ snaptools snap-add-pmat \
 
 # Using SnapATAC for clustering
 ## Initial QC
-In this step, we will load a previously processed snap file into R. This file contains the example data from 10X genomics consisting of 5,000 adult mouse brain cells. Unfortunately, you will not be able to use RStudio for this lab because it is not included in our Singularity container. Instead, open the terminal and use R with the command line:
+In this step, we will load a previously processed snap file into R. This file contains the example data from 10X genomics consisting of 5,000 adult mouse brain cells. Unfortunately, you will not be able to use RStudio for this lab because it is not included in our Singularity container. Instead, open the terminal and use R with the command line. You can paste data in the your terminal using CTRL+shift+V.
 
-```{shell, eval = FALSE}
+```{shell, eval=FALSE}
+# Copy the snap file into your working directory
+cp /home/albanus/classes/bioinf545_w20/data/atac_v1_adult_brain_fresh_5k.snap .
+
+# # Or download it directly
+# wget http://renlab.sdsc.edu/r3fang/share/github/Mouse_Brain_10X/atac_v1_adult_brain_fresh_5k.snap
+
+# Start R
 R -q
 ```
+
+```{r, eval=FALSE}
+library(dplyr)
+library(tidyr)
+library(viridisLite)
+library(ggplot2)
+# library(ggpointdensity)
+library(scales)
+library(SnapATAC)
+library(GenomicRanges)
+```
+
 
 First, we will load the snap file and the barcodes metadata. The metadata file contains information about each barcode, such as the number of reads, etc. Beacuse of time constraints, we will not be able generate the metadata in this lab. There are instructions on how to generate it in the [Cell Ranger ATAC documentation](https://support.10xgenomics.com/single-cell-atac/software/pipelines/latest/using/count).
 
@@ -147,7 +171,7 @@ Next, we will calculate the promoter ratio for each barcode, which is defined as
 
 ```{r}
 data_dir <- "/home/albanus/classes/bioinf545_w20/data"
-file.snap <- file.path(data_dir, "atac_v1_adult_brain_fresh_5k.snap")
+file.snap <- "atac_v1_adult_brain_fresh_5k.snap"
 file.barcodes <- file.path(data_dir, "atac_v1_adult_brain_fresh_5k_singlecell.csv")
 
 snap_obj <- createSnap(file = file.snap, sample = "atac_v1_adult_brain_fresh_5k")
@@ -574,7 +598,7 @@ accessible_peaks <- lapply(levels(snap_obj@cluster), function(cluster_i){
   })
 names(accessible_peaks) = levels(snap_obj@cluster)
 
-par(mfrow = c(2, 2))
+par(mfrow = c(1, 2))
 for(cluster_i in levels(snap_obj@cluster)){
 	# print(cluster_i)
 	idy = accessible_peaks[[cluster_i]]

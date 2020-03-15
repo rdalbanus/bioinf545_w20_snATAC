@@ -1,8 +1,10 @@
 # Single Nuclei ATAC-seq lab - BIOINF 545
 **Winter, 2020**
 
-Department of Computational Medicine & Bioinformatics
+Department of Computational Medicine & Bioinformatics,
+
 University of Michigan
+
 Authors: Ricardo D'Oliveira Albanus and Stephen C.J. Parker
 
 ## Instructions
