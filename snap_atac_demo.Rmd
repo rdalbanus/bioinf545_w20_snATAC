@@ -193,7 +193,10 @@ p1 <- ggplot(data, aes(x = nreads + 1, y = promoter_ratio)) +
        title = "10X Fresh Adult Brain") +
   scale_color_viridis_c(trans = "log10") +
   scale_x_continuous(trans = "log10", labels = comma)
+
+# pdf("qc1.pdf", width = 4, height = 4)
 plot(p1)
+# dev.off()
 ```
 
 We only want to look at barcodes that represent real nuclei. Low coverage barcodes are probably coming from empty droplets (with background DNA) and/or degraded nuclei.
@@ -204,9 +207,11 @@ Based on the data, a cutoff threshold of reads between 1,000 and 100,000 and a p
 cutoffs <- list(nreads = list(min = 10^3, max = 10^5),
                 pr = list(min = 0.15, max = 0.6))
 
+# pdf("qc2.pdf", width = 4, height = 4)
 p1 +
   geom_hline(yintercept = unlist(cutoffs$pr), color = "red", lty = "dashed") +
   geom_vline(xintercept = unlist(cutoffs$nreads), color = "red", lty = "dashed")
+# dev.off()
 ```
 
 Let's zoom in a bit. You can try experimenting with the cutoff thresholds and see how they affect the downstream clustering results. In a real analysis, you will spend a considerable number of hours going back and forth between QC and clustering parameters to optimize your clustering results.
@@ -223,7 +228,10 @@ p2 <- data %>%
        color = "Point density", title = "10X Fresh Adult Brain") +
   scale_color_viridis_c(trans = "log10") +
   scale_x_continuous(trans = "log10", labels = comma)
+
+# pdf("qc3.pdf", width = 5, height = 4)
 plot(p2)
+# dev.off()
 ```
 
 ## Barcode filtering based on ATAC-seq signal
@@ -290,7 +298,8 @@ We removed over 1,000 bins. Let's look at the histogram of number of reads per b
 ```{r}
 bin_cov <- data.frame(nreads = Matrix::colSums(snap_obj@bmat)) %>% 
   filter(nreads > 1)
-  
+
+# pdf("hist.pdf", width = 4, height = 4)
 bin_cov %>% 
   ggplot(aes(nreads + 1)) +
   geom_histogram(bins = 15, color = "black", fill = "lightblue") +
@@ -298,6 +307,7 @@ bin_cov %>%
              color = "red", lty = "dashed") +
   scale_x_continuous(trans = "log10", labels = comma) +
   labs(x = "Number of reads per bin")
+# dev.off()
 ```
 
 The final number of bins for clustering is ~470K.
@@ -317,10 +327,12 @@ This will take a couple of minutes.
 ```{r, fig.width=7, fig.height=7}
 snap_obj <- runDiffusionMaps(obj = snap_obj, input.mat = "bmat", num.eigs = 50)
 
+# pdf("eigenvectors.pdf", width = 7, height = 7)
 plotDimReductPW(obj = snap_obj, eigs.dims = 1:50,
                 point.size = 0.3, point.color = "grey", 
                 point.shape = 19, point.alpha = 0.6, 
                 down.sample = 5000)
+# dev.off()
 ```
 
 As you can see from the plots, the data has various "interesting" shapes up until around eigenvector 20. After that, everything looks like a uniform blob. This means that the larger eigenvectors are unable to capture meaningful differences between the nuclei. Note that different datasets will have different properties. Since this is a brain sample, we expect high diversity of cell types and the number of usable eigenvectors should be higher. However, other less heterogeneous tissues might need less eigenvalues.
@@ -351,35 +363,43 @@ snap_obj  <-  runViz(obj = snap_obj,
 Now let's look at the clustering results. Try re-running the code above to experiment different values for k and number of eigenvectors. What happens if you increase k or use less eigenvectors? Try using only the first 5 eigenvectors and k=100. You should carefully explore the choice of parameters; this is all part of the exploratory analyses to obtain good clustering.
 
 ```{r, fig.width=5, fig.height=5}
+# pdf("clusters.pdf", width = 5, height = 5)
 plotViz(obj = snap_obj, method = "tsne", 
         main = "10X Brain Cluster", point.color = snap_obj@cluster, 
         point.size = 1, point.shape = 19, point.alpha = 0.8, 
         text.add = TRUE, text.size = 1.5, text.color = "black",
         text.halo.add = TRUE, text.halo.color = "white", text.halo.width = 0.2,
         down.sample = 10000, legend.add = FALSE)
+# dev.off()
 ```
 
 ## Clustering QC with technical aspects
 Now we should QC the clustering results. Let's overlay some technical properties on the UMAP. We will look at the number of fragments per barcode, the fraction of reads in peaks (FRiP), and reads marked as duplicate. Is there any pattern that stands out? Maybe a cluster that seems to be high or low in a technical factor. This information is useful to inform the choice of QC thresholds above as well as identify potential technical factors that can be mitigated. At the very least, you will be able to determine if some clusters seem to be driven by technical artifacts and potentially discard them from downstream analyses.
 
 ```{r, fig.width=5, fig.height=5}
+# pdf("cluster_qc1.pdf", width = 5, height = 5)
 plotFeatureSingle(obj = snap_obj, 
                   feature.value = log10(snap_obj@metaData[,"passed_filters"] + 1),
                   method = "tsne", main = "10X Brain Read Depth", 
                   point.size = 0.2, point.shape = 19, down.sample = 10000, 
                   quantiles = c(0.01, 0.99)) 
+# dev.off()
 
+# pdf("cluster_qc2.pdf", width = 5, height = 5)
 plotFeatureSingle(obj = snap_obj,
                   feature.value = snap_obj@metaData$peak_region_fragments / snap_obj@metaData$passed_filters,
                   method = "tsne", main = "10X Brain FRiP",
                   point.size = 0.2, point.shape = 19, down.sample = 10000,
                   quantiles = c(0.01, 0.99)) # remove outliers
+# dev.off()
                   
+# pdf("cluster_qc3.pdf", width = 5, height = 5)
 plotFeatureSingle(obj = snap_obj,
                   feature.value = snap_obj@metaData$duplicate / snap_obj@metaData$total,
                   method = "tsne", main = "10X Brain Duplicate",
                   point.size = 0.2, point.shape = 19, down.sample = 10000,
                   quantiles = c(0.01, 0.99)) # remove outliers
+# dev.off()
 ```
 
 ## Plotting marker genes
@@ -422,7 +442,7 @@ snap_obj = runMagic(
     input.mat = "gmat",
     step.size = 3
   )
-
+# pdf("markers.pdf", width = 10, height = 10)
 par(mfrow = c(3,3))
 for(i in 1:9){
     plotFeatureSingle(
@@ -434,7 +454,8 @@ for(i in 1:9){
         point.shape = 19, 
         down.sample = 10000,
         quantiles = c(0, 1)
-  )}
+    )}
+# dev.off()
 ```
 
 There are very clear differences in marker gene body accessibility across clusters, which are likely correlated with gene expression levels. Notice that some genes are more cluster-specific than others. A potentially helpful analysis is to perform hierarchical clustering at the cluster-level gene body accessibility. We can very clearly find two major cell type groups - in this dataset, they should correspond to the excitatory (**Slc17a7**) and inhibitory (**Gad2**) neuronal populations.
@@ -445,6 +466,7 @@ ensemble.ls = lapply(split(seq(length(snap_obj@cluster)), snap_obj@cluster), fun
 	SnapATAC::colMeans(snap_obj[x,], mat = "bmat")
 	})
 # cluster using 1-cor as distance  
+# pdf("cluster.pdf", width = 6, height = 5)
 hc = hclust(as.dist(1 - cor(t(do.call(rbind, ensemble.ls)))), method = "ward.D2")
 plotViz(
     obj = snap_obj,
@@ -464,6 +486,7 @@ plotViz(
     legend.add = FALSE
     )
 plot(hc, hang = -1, xlab = "Cluster", sub = "")
+# dev.off()
 ```
 
 # Cluster-level analyses 
@@ -488,11 +511,11 @@ Note that even though we used the same seeds for the analyses, the clustering re
 #         path.to.macs = path_macs2,
 #         gsize = "hs", # mm, hs, etc
 #         buffer.size = 500,
-#         num.cores = 1,
+#         num.cores = 4,
 #         macs.options = "--nomodel --shift 100 --ext 200 --qval 5e-2 -B --SPMR",
 #         tmp.folder = tempdir()
 #    )
-#  }, mc.cores = 8)  # parallelization
+#  }, mc.cores = 1)  # parallelization
 # 
 # # assuming all .narrowPeak files in the current folder are generated from the clusters
 # peaks.names <- system("ls | grep narrowPeak", intern = TRUE)
@@ -533,6 +556,8 @@ DARs <- findDAR(
   )
 DARs$FDR <- p.adjust(DARs$PValue, method = "BH")  # Calculate FDR
 idy = which(DARs$FDR < 5e-2 & DARs$logFC > 0)  # DARs with increased accesibility
+
+# pdf("dar1.pdf", width = 5, height = 5)
 plot(DARs$logCPM, DARs$logFC, 
     pch = 19, cex = 0.1, col = "grey", 
     ylab = "logFC", xlab = "logCPM",
@@ -545,6 +570,7 @@ points(DARs$logCPM[idy],
     col = "red"
   )
 abline(h = 0, lwd = 1, lty = 2)
+# dev.off()
 
 # Manually calculate fold change Z-scores
 covs = Matrix::rowSums(snap_obj@pmat)
@@ -552,6 +578,7 @@ vals = Matrix::rowSums(snap_obj@pmat[,idy]) / covs
 vals.zscore = (vals - mean(vals)) / sd(vals)
 
 # Plot Z-scores on the UMAP
+# pdf("dar2.pdf", width = 5, height = 5)
 plotFeatureSingle(
     obj = snap_obj,
     feature.value = vals.zscore,
@@ -562,6 +589,7 @@ plotFeatureSingle(
     down.sample = 5000,
     quantiles = c(0.01, 0.99)
   )
+# dev.off()
 ```
 
 We will look for differentially accessible regions in all the clusters. The resulting `accessible_peaks` object is a list of numeric values with the indices of the instances of `snap_obj@peak` that are significantly accessible for each cluster.
@@ -591,6 +619,7 @@ accessible_peaks <- lapply(levels(snap_obj@cluster), function(cluster_i){
   })
 names(accessible_peaks) = levels(snap_obj@cluster)
 
+# pdf("dar_umaps.pdf", width = 7, height = 3.5)
 par(mfrow = c(1, 2))
 for(cluster_i in levels(snap_obj@cluster)){
 	# print(cluster_i)
@@ -608,6 +637,7 @@ for(cluster_i in levels(snap_obj@cluster)){
 		quantiles = c(0.01, 0.99)
 		)
 }
+# dev.off()
 ```
 
 In the last step in this lab, we will make and save a bed file with the differentially accessible peaks in cluster 8.
